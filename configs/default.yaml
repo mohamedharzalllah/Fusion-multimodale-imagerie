@@ -1,0 +1,87 @@
+# ============================================================================
+# Configuration par défaut — Fusion multimodale Imagerie + Tabulaire en SSL
+# Reproduit une version simplifiée de Hager et al., CVPR 2023
+# "Best of Both Worlds: Multimodal Contrastive Learning with Tabular and
+#  Imaging Data"
+# ============================================================================
+
+seed: 42
+device: auto          # auto | cpu | cuda
+out_dir: outputs
+
+data:
+  # synthetic | cbis_ddsm | vindr
+  source: synthetic
+  root: null                # chemin racine du dataset réel (ignoré si synthetic)
+  image_size: 128
+  in_chans: 1               # mammographie = niveaux de gris
+  # tâche aval : 'malignancy' (binaire) ou 'birads' (multi-classes)
+  target: malignancy
+  n_synthetic: 3000         # taille du dataset synthétique
+  missing_rate: 0.25        # taux de valeurs manquantes injecté (synthetic)
+  val_frac: 0.15
+  test_frac: 0.15
+  num_workers: 2
+  # colonnes exclues du vecteur tabulaire (fuite de label !)
+  drop_columns: []
+
+model:
+  image:
+    name: resnet18          # tout modèle timm : resnet18, resnet50, vit_small_patch16_224...
+    pretrained: false       # true = init ImageNet (mettre false pour un SSL "pur")
+  tabular:
+    d_token: 64             # dimension d'un token de feature
+    n_layers: 3             # profondeur du Transformer tabulaire
+    n_heads: 4
+    dropout: 0.1
+    # naive_mlp | ft_transformer  (ft_transformer = "au-delà de la concaténation naïve")
+    arch: ft_transformer
+    # true : le token [MISSING] appris participe à l'attention (recommandé)
+    # false: la feature manquante est exclue de l'attention (variante "drop")
+    attend_missing: true
+    # embeddings sémantiques des colonnes :
+    #   null | "auto" (sentence-transformers si dispo) | "hashing" | chemin .npy
+    semantic_field_emb: null
+  projection:
+    dim: 128
+    hidden: 256
+
+pretrain:
+  epochs: 30
+  batch_size: 128
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  warmup_epochs: 2
+  temperature: 0.1
+  learnable_temperature: true
+  # pondération image->tabulaire vs tabulaire->image (0.5 = symétrique)
+  lambda_i2t: 0.5
+  # termes intra-modaux optionnels (SimCLR image-image)
+  intra_image_weight: 0.0
+  # augmentation tabulaire type SCARF : proportion de features corrompues
+  tabular_corruption_rate: 0.3
+  # cible douce pondérée par la similarité tabulaire, au lieu de la diagonale
+  # stricte. À activer quand le vecteur tabulaire n'identifie pas le patient
+  # (le diagnostic affiché avant l'entraînement le dit).
+  soft_targets: false
+  soft_temperature: 0.25
+  amp: true
+  log_every: 20
+
+finetune:
+  epochs: 20
+  batch_size: 64
+  lr: 3.0e-4
+  head_lr: 1.0e-3
+  weight_decay: 1.0e-4
+  # linear_probe (encodeur gelé) | full (tout dégelé)
+  protocol: full
+  head_hidden: 0            # 0 = tête linéaire ; >0 = MLP à une couche cachée
+  head_dropout: 0.1
+  # image | tabular | both  -> modalités disponibles au moment du test
+  modalities: image
+  label_fractions: [0.01, 0.1, 1.0]
+  amp: true
+
+eval:
+  retrieval_k: [1, 5, 10]

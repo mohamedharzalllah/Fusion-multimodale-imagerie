@@ -1,0 +1,140 @@
+# ============================================================================
+# CBIS-DDSM sur Kaggle (GPU T4/P100) — patches ROI recadrés, split officiel
+#
+# Dataset : awsaf49/cbis-ddsm-breast-cancer-image-dataset
+# Racine   : /kaggle/input/datasets/awsaf49/cbis-ddsm-breast-cancer-image-dataset
+#            (ou /kaggle/input/cbis-ddsm-breast-cancer-image-dataset selon le
+#             mode de montage — les deux sont auto-détectés, --root est optionnel)
+#
+#   1) python scripts/inspect_cbis.py
+#   2) python scripts/prepare_cbis.py --out /kaggle/working/cbis_cache \
+#            --size 256 --kind roi
+#   3) python -m src.train.run_experiments --config configs/cbis_kaggle.yaml
+#
+# Réglages calibrés pour tenir dans une session Kaggle (~9 h) : le plan complet
+# (2 pré-entraînements + 7 méthodes x 3 fractions de labels) prend environ
+# 3 à 4 h sur T4 avec ces valeurs.
+# ============================================================================
+
+seed: 42
+device: auto
+out_dir: /kaggle/working/outputs
+
+data:
+  source: cbis_ddsm
+  # Pointe sur le --out de prepare_cbis.py (là où est cbis_manifest.csv),
+  # PAS sur /kaggle/input.
+  root: /kaggle/working/cbis_cache
+
+  image_size: 224
+  in_chans: 1
+  target: malignancy          # malignancy | birads
+
+  # 'roi'  : patch recadré autour de la lésion (rapide, signal dense)
+  # 'full' : mammographie complète (réaliste, exige size >= 512)
+  cbis_kind: roi
+
+  # Utilise les fichiers *_train_set.csv / *_test_set.csv officiels.
+  # Vos chiffres deviennent comparables à la littérature CBIS-DDSM.
+  use_official_split: true
+  val_frac: 0.15              # prélevée DANS le train officiel, par patient
+  test_frac: 0.20             # ignoré quand use_official_split = true
+
+  # CBIS-DDSM sépare masses et calcifications INDÉPENDAMMENT : un patient peut
+  # donc être dans mass_test et calc_train. true retire ces patients du train
+  # (le test reste intact, donc comparable). Le mettre à false gonfle l'AUROC.
+  enforce_group_disjoint: true
+
+  # Quelle vue du vecteur tabulaire :
+  #   full          tout (borne supérieure de l'apport des métadonnées)
+  #   clinical_only densité, latéralité, incidence, nb de lésions — la vue à
+  #                 défendre scientifiquement, les descripteurs morphologiques
+  #                 étant des annotations portant sur la lésion montrée
+  #   roi_visible   uniquement ce qu'un patch recadré peut montrer (type, forme,
+  #                 marges, morphologie/distribution des calcifications,
+  #                 subtilité). Recommandé avec cbis_kind: roi — la latéralité,
+  #                 l'incidence et la densité disparaissent au recadrage, et
+  #                 demander à l'InfoNCE de les deviner ajoute du bruit
+  #                 irréductible dans la cible.
+  # Vérifiez avec :  python -m src.eval.probe --ckpt <ssl.pt>
+  tabular_view: full
+  clinical_only: false        # déprécié, équivaut à tabular_view: clinical_only
+
+  # Les modalités catégorielles vues moins de N fois sont regroupées en 'OTHER'.
+  # Sur CBIS c'est indispensable : calc_type contient des valeurs composées
+  # ('PLEOMORPHIC-FINE_LINEAR_BRANCHING') et monte à ~45 modalités dont
+  # beaucoup à 1 ou 2 occurrences.
+  min_category_count: 20
+
+  num_workers: 2              # Kaggle ne donne que 2 vCPU
+  drop_columns: []
+
+model:
+  image:
+    name: resnet18            # resnet50 si vous acceptez ~2x le temps
+    # true : le pré-entraînement contrastif PART d'ImageNet.
+    #
+    # C'était false initialement, et c'était une erreur de méthode : la baseline
+    # B (image seule, init ImageNet) atteignait 0.746 d'AUROC alors que notre
+    # méthode F plafonnait à 0.662, uniquement parce que F partait de poids
+    # aléatoires. On comparait donc "SSL sur 2276 images" à "ImageNet sur 1,2 M
+    # d'images" — un handicap qu'on s'infligeait soi-même, et qui n'est pas le
+    # protocole de Hager et al. (eux aussi initialisent depuis ImageNet).
+    #
+    # Avec true, l'échelle devient interprétable :
+    #   A = aucun pré-entraînement | B = ImageNet | C = ImageNet + SimCLR
+    #   F = ImageNet + SSL multimodal   -> F vs B isole l'apport du SSL
+    pretrained: true
+  tabular:
+    d_token: 96
+    n_layers: 3
+    n_heads: 4
+    dropout: 0.1
+    arch: ft_transformer
+    attend_missing: true
+    # "auto" -> sentence-transformers si installé, sinon repli hachage.
+    # run_experiments fige la matrice sur disque au premier appel.
+    semantic_field_emb: auto
+  projection:
+    dim: 128
+    hidden: 256
+
+pretrain:
+  epochs: 60
+  batch_size: 128             # InfoNCE a besoin de négatifs : ne pas descendre
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  warmup_epochs: 3
+  temperature: 0.1
+  learnable_temperature: true
+  lambda_i2t: 0.5
+  intra_image_weight: 0.0
+  tabular_corruption_rate: 0.3
+
+  # Cible douce au lieu de la diagonale stricte, utile SI les lignes tabulaires
+  # se dupliquent. Sur CBIS ce n'est pas le cas : le diagnostic affiché avant
+  # l'entraînement montre ~98 % de vecteurs distincts et un plafond de R@1
+  # proche de 1. On laisse donc false ; le diagnostic vous dira s'il faut la
+  # basculer (par exemple avec tabular_view: clinical_only, où les colonnes
+  # restantes sont peu nombreuses et les collisions redeviennent massives).
+  soft_targets: false
+  soft_temperature: 0.25
+
+  amp: true
+  log_every: 40
+
+finetune:
+  epochs: 25
+  batch_size: 64
+  lr: 1.0e-4                  # encodeur pré-entraîné : LR faible
+  head_lr: 1.0e-3             # tête neuve : LR plus élevé
+  weight_decay: 1.0e-4
+  protocol: full              # full | linear_probe
+  head_hidden: 0
+  head_dropout: 0.1
+  modalities: image           # protocole Hager : au test, image seule
+  label_fractions: [0.01, 0.1, 1.0]
+  amp: true
+
+eval:
+  retrieval_k: [1, 5, 10]

@@ -1,0 +1,11 @@
+outputs/
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+*.pt
+*.npz
+*.npy
+.DS_Store
+.venv/
+env/
+data/

@@ -1,0 +1,24 @@
+# --- coeur (obligatoire) -----------------------------------------------
+# torch>=2.3 requis : le code utilise la nouvelle API torch.amp.GradScaler /
+# torch.amp.autocast(device_type, ...), absente des versions 2.1 et 2.2.
+torch>=2.3
+torchvision>=0.18
+timm>=0.9.12
+numpy>=1.24
+pandas>=2.0
+Pillow>=10.0
+PyYAML>=6.0
+tqdm>=4.65
+
+# --- figures et tableaux (report.py) -----------------------------------
+matplotlib>=3.7
+tabulate>=0.9          # pandas.to_markdown
+
+# --- optionnel ---------------------------------------------------------
+# embeddings sémantiques des noms de colonnes
+# sentence-transformers>=2.2
+# open-clip-torch>=2.24
+# visualisation de l'espace latent
+# umap-learn>=0.5
+# conversion DICOM -> PNG pour VinDr-Mammo
+# pydicom>=2.4
